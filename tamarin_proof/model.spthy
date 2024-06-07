@@ -1,0 +1,734 @@
+theory ODT
+begin
+
+builtins: hashing, asymmetric-encryption, symmetric-encryption, diffie-hellman, signing
+functions: h2/2, h3/1, h4/3, hmac/2, derive_secret/2, measure/2, select/1, read/2, v/2, fz/3, my_g/1, my_g2/2
+equations: read(pos, read(pos, prop)) = read(pos, prop), measure(pos, read(pos, prop)) = measure(pos, prop), fz(v(s, uw), t, uw) = my_g2(s, t)
+
+heuristic: o "myoracle.py"
+
+// OTEE - The O-TEE
+// NP - Neutral party
+// D - Device
+// AGGR - Aggressor
+
+// The following channel rules model the direct connection between the
+// device and the O-TEE. The adversary rules allow the adversary that
+// compromises a device to read and write to the O-TEE.
+
+rule OTEEDeviceChannel:
+    [ !OTEE($OTEE, $D)
+    , OTEEOut($OTEE, msg) ]
+-->
+    [ DeviceIn($D, msg) ]
+
+rule DeviceOTEEChannel:
+    [ !OTEE($OTEE, $D)
+    , DeviceOut($D, msg) ]
+-->
+    [ OTEEIn($OTEE, msg) ]
+
+rule AdversaryReadOTEEOut:
+    [ !OTEE($OTEE, $D)
+    , OTEEOut($OTEE, msg) ]
+  --[ RequireOSCompromise($D) ]->
+    [ Out(msg) ]
+
+rule AdversaryReadDeviceOut:
+    [ !OTEE($OTEE, $D)
+    , DeviceOut($D, msg) ]
+  --[ RequireOSCompromise($D) ]->
+    [ Out(msg) ]
+
+rule AdversaryWriteToOTEE:
+    [ !OTEE($OTEE, $D)
+    , In(msg) ]
+  --[ RequireOSCompromise($D) ]->
+    [ OTEEIn($OTEE, msg) ]
+
+rule AdversaryWriteToDevice:
+    [ !OTEE($OTEE, $D)
+    , In(msg) ]
+  --[ RequireOSCompromise($D) ]->
+    [ DeviceIn($D, msg) ]
+
+
+//////// Role setup ////////
+
+// Create a neutral party NP
+rule NP_Init:
+    [ Fr(~ltk)
+    ]
+  --[ InitializeNP($NP)
+    , InitializeNP_LTK($NP, ~ltk) ]->
+    [ !NP_Ltk($NP, ~ltk), !NP_Pk($NP, pk(~ltk)) ]
+
+// Initialize a device D
+rule Device_Init:
+    []
+  --[]->
+    [ !Device($D) ]
+
+// Neutral organization registers an O-TEE on a device D
+rule NP_Register_OTEE_On_Device:
+    [ !Device($D)
+    , !NP_Ltk($NP, NP_ltk)
+    , Fr(~OTEE_ltk)
+    ]
+  --[ OTEERegisteredOnDevice($NP, $OTEE, $D)
+    , Unique(<$NP, $D>) // A device is only registered once by every neutral party
+    , Unique($OTEE) // A specific O-TEE can only be registered once
+    , OTEERegisterOTEE($NP, $OTEE, ~OTEE_ltk)
+    ]->
+    [ !OTEE_Ltk($OTEE, ~OTEE_ltk)
+    , !OTEE_Pk($OTEE, pk(~OTEE_ltk))
+    , !OTEE($OTEE, $D)
+    , Out(<$OTEE, pk(~OTEE_ltk), sign(<$OTEE, pk(~OTEE_ltk)>, NP_ltk)>)
+    // Publish O-TEE identity and a NP certificate for the O-TEE's
+    // public key
+    ]
+
+
+// Compromising a device gives the adversary access to some additional
+// rules later. We limit access to them manually using
+// restrictions. This allows us to prove the protocol executes
+// correctly when no adversary is present.
+rule Compromise_Device:
+    [ !Device($D) ]
+  --[ OSCompromise($D) ]->
+    [ ]
+
+// Initialize a new aggressor AGGR
+rule Aggressor_Init:
+    [ Fr(~ltk)
+    ]
+  --[ AggressorInitialized($AGGR)
+    , AggressorLTK($AGGR, ~ltk)
+    , AggressorPK($AGGR, pk(~ltk)) ]->
+    [ !AGGR_Ltk($AGGR, ~ltk)
+    , !AGGR_Pk($AGGR, pk(~ltk))
+    , Out(pk(~ltk))
+    ]
+
+// Aggressor creates a new agent process
+rule Aggressor_Create_Agent:
+    [ !AGGR_Ltk($AGGR, ~ltk)
+    , Fr(~prop) // Properties of the agent
+    ]
+  --[ AggressorCreateAgent($AGGR, $A, ~prop) ]->
+    [ Aggressor_0($AGGR, ~prop, $A, ~ltk)
+	// The Aggressor_0 is not a persistend fact to represents an
+	// aggressor that accepts verification only once for a
+	// specific agent.
+    , !Agent($A, ~prop, pk(~ltk))
+    	// The agent fact stores the agent's identity, its properties,
+    	// and the public key of the TLS server that it connects to.
+    	// The agent is a persistent fact because it is a program that
+    	// can run multiple times.
+    ]
+
+// The adversary creates a new agent process
+rule Adversary_Create_Agent:
+    [ In(<prop, adv_srv_pk>) ]
+  --[ AdversaryCreateAgent($A, prop) ]->
+    [ !Agent($A, prop, adv_srv_pk) ]
+
+// Adversary that finds out the measured positions can read the
+// corresponding properties from an agent. With restrictions, we
+// prevent the adversary from extracting properties from its own
+// agents. We do this to reduce the complexity of the proof.
+rule Adversary_Extract_Agent_Properties:
+    [ !Agent($A, prop, srv_pk)
+    , In(positions) ]
+  --[ AdversaryExtractAgentProperties($A, prop) ]->
+    [ Out(read(positions, prop)) ]
+
+// Device starts running the agent process.
+rule Device_Run_Agent:
+    [ !Device($D)
+    , !Agent($A, prop, srv_pk)
+    , Fr(~aid) ]
+  --[ DeviceStartRunningAgent(~aid, $A, $D) ]->
+    [ !AgentInstance(~aid, $A, $D, prop, srv_pk) ]
+
+
+//////// Protocol specification ////////
+
+// We assume the agent starts a TLS connection when it calls a TLS
+// library that is on a device.
+rule Agent_Start_TLS_Connection:
+    [ !AgentInstance(~aid, $A, $D, prop, srv_pk)
+    ,  Fr(~tid) // Current thread id identifies the thread on the
+                // device that handles the TLS library call and O-TEE
+                // communication.
+    ]
+  --[ DeviceStartTLS($D, ~tid)
+    ]->
+    [ Device_0(~tid, $D, ~aid, $A, srv_pk) ]
+
+// First message by the device. The device must have an OTEE.
+rule Device_Call_OTEE_Client_Hello:
+    [ Device_0(~tid, $D, ~aid, $A, srv_pk)
+    , !OTEE($OTEE, $D)
+    ]
+  --[ DeviceHello($D, $A, $OTEE) ]->
+    [ Device_1(~tid, $D, $OTEE, ~aid, $A, srv_pk)
+    , DeviceOut($D, <~tid, 'call_hello', srv_pk>)
+    ]
+
+// OTEE recieves a hello request and outputs the
+// ClientHello message
+rule OTEE_Client_Hello:
+    [ !OTEE($OTEE, $D)
+    , OTEEIn($OTEE, <tid, 'call_hello', srv_pk>)
+    , Fr(~u), Fr(~x_0), Fr(~tee_id) // The client nonce, client secret, and
+                                    // the ID of the O-TEE thread
+    ]
+  --[ OTEEStartThread(~tee_id)
+    , OTEEHello($OTEE, $D, ~u)
+    , OTEEHelloDH($OTEE, $D, ~x_0, inv(~x_0), 'g'^~x_0)
+    , OTEESession($OTEE, ~u) ]->
+    [ OTEE_0(~tee_id, tid, $OTEE, $D, ~u, ~x_0, srv_pk)
+    , OTEEOut($OTEE, <~tee_id, tid, 'OTEE_hello', ~u, 'g'^~x_0>)
+    ]
+
+rule Device_Forward_OTEE_Client_Hello:
+    [ DeviceIn($D, <eid, ~tid, 'OTEE_hello', u, X0>)
+    , Device_1(~tid, $D, $OTEE, ~aid, $A, srv_pk)
+    ]
+-->
+    [ Device_2(~tid, eid, $D, $OTEE, ~aid, $A, srv_pk)
+    , Out( <u, X0> )
+    ]
+
+
+// First message by the aggressor.
+rule Server_Hello:
+    let
+      X_0 = 'g'^x_0  // verify the value is in the group
+      DHE = X_0^~x_1
+      w = h2('0', measure(select(DHE), ~prop)) // Calculate the expected witness, the interrupt indicator must be '0'
+      n_1 = v(~s, <client_nonce, w>)
+
+      server_handshake_traffic_secret = derive_secret(DHE, 's_hs_traffic')
+      client_handshake_traffic_secret = derive_secret(DHE, 'c_hs_traffic')
+      server_finished_key = derive_secret(server_handshake_traffic_secret, 'finished')
+      client_finished_key = derive_secret(client_handshake_traffic_secret, 'finished')
+
+      master_secret = derive_secret(DHE, 'derived') // Simplified
+      client_application_traffic_secret = derive_secret(master_secret, 'c_ap_traffic')
+
+      server_transcript = <client_nonce, X_0, n_1, 'g'^~x_1>
+      server_transcript_hash = h3(server_transcript)
+      server_certificate_verify_ext = sign(<server_transcript, server_transcript_hash>, ~ltk)
+      server_finished = hmac(server_finished_key, <server_transcript, server_certificate_verify_ext>) // Instead of extending the transcript and hashing it again, we just give it to hmac as a pair directly
+
+    in
+    [ Aggressor_0($AGGR, ~prop, $A, ~ltk)
+    , In( <client_nonce, X_0> )
+    , Fr(~x_1)
+    , Fr(~s)
+    ]
+  --[ Neq(DHE, DH_neutral)
+    , Neq(X_0, 'g')
+    , Neq(X_0, DH_neutral)
+    , ServerHello($AGGR, $A)
+    , OUT_Aggressor_0(~prop)
+    , AggrDH($AGGR, X_0, ~x_1, 'g'^~x_1)
+    , AggrDHKey($AGGR, DHE)
+    , AggrS($AGGR, ~s)
+    , AggrServerHelloPK($AGGR, ~ltk, pk(~ltk))
+    , AggrMeasurementSelection($AGGR, select(DHE))
+    ]->
+    [ Aggressor_1($AGGR, ~prop, ~s, $A, ~ltk, client_nonce, X_0, n_1, ~x_1, client_handshake_traffic_secret, client_finished_key, client_application_traffic_secret)
+    , Out( <n_1, 'g'^~x_1, senc(server_certificate_verify_ext, server_handshake_traffic_secret), senc(server_finished, server_handshake_traffic_secret)> )
+    // According to the specification, the TLS messages are protected
+    // with an AEAD algorithm that uses a key derived from the
+    // server_handshake_traffic_secret. Instead, we use symmetric
+    // encryption and do pattern matching during decryption to
+    // approximate integrity protection as was done in the TLS 1.3
+    // Tamarin model:
+    // https://github.com/tls13tamarin/TLS13Tamarin/blob/67262370672b2cbcc461179e9d3e87eddcfcb999/src/rev21/model/record.m4i
+    ]
+
+rule Device_Receive_Server_Hello_Forward_To_OTEE:
+    [ Device_2(~tid, eid, $D, $OTEE, ~aid, $A, srv_pk)
+    , In( <n_1, X_1, server_certificate_verify_ext_encrypted, server_finished_encrypted> ) ]
+  --[ DeviceReceiveServerHello($D, ~tid, eid) ]->
+    [ Device_3(~tid, eid, $D, $OTEE, ~aid, $A, srv_pk)
+    , DeviceOut($D, <~tid, eid, 'device_forward_server_hello', n_1, X_1, server_certificate_verify_ext_encrypted, server_finished_encrypted>) ]
+
+rule OTEE_Receive_Server_Hello:
+    let
+      X_1 = 'g'^x_1    // verify the value is in the group
+      DHE = X_1^~x_0
+
+      server_handshake_traffic_secret = derive_secret(DHE, 's_hs_traffic')
+      client_handshake_traffic_secret = derive_secret(DHE, 'c_hs_traffic')
+      server_finished_key = derive_secret(server_handshake_traffic_secret, 'finished')
+      client_finished_key = derive_secret(client_handshake_traffic_secret, 'finished')
+      master_secret = derive_secret(DHE, 'derived') // Simplified
+      client_application_traffic_secret = derive_secret(master_secret, 'c_ap_traffic')
+
+      expected_server_transcript = <~u, 'g'^~x_0, n_1, X_1>
+      expected_server_transcript_hash = h3(expected_server_transcript)
+      expected_server_finished = hmac(server_finished_key, <expected_server_transcript, server_certificate_verify_ext>)
+    in
+    [ OTEE_0(~tee_id, tid, $OTEE, $D, ~u, ~x_0, srv_pk)
+    , OTEEIn($OTEE, <tid, ~tee_id, 'device_forward_server_hello', n_1, X_1,
+    senc(server_certificate_verify_ext, server_handshake_traffic_secret),
+    senc(server_finished, server_handshake_traffic_secret)>) // Assumption that the messages are well formed since TLS uses AEAD
+    ]
+  --[ Eq(verify(server_certificate_verify_ext, <expected_server_transcript, expected_server_transcript_hash>, srv_pk), true)
+    , Eq(server_finished, expected_server_finished)
+    , Neq(DHE, 'g'^1)
+    , Neq(DHE, DH_neutral)
+    , Neq(DHE, 'g'^~x_0)
+    , OTEEReceiveServerHello($OTEE, srv_pk, n_1)
+    , OTEEDHKey($OTEE, DHE)
+    , OTEEDH($OTEE, ~x_0, inv(~x_0), X_1)
+    , OTEESession($OTEE, ~u)
+    , OTEESessionAggrNonce($OTEE, ~u, n_1)
+    , PropertyHelper($OTEE, x_1, ~x_0, DHE)
+    ]->
+    [ OTEE_2(~tee_id, tid, $OTEE, $D, ~u, ~x_0, n_1, X_1, DHE, client_handshake_traffic_secret, client_finished_key, client_application_traffic_secret) ]
+
+
+// We assume that the challenge property and hint leak after the
+// measurement. Depending on the chosen property and the actual system
+// implementation this might not happen, but in our case we show that
+// even a measurement that leaks information to the system is secure
+// to be used with our protocol.
+rule No_Interrupt_OTEE_Memory_Read:
+    let
+      ch_pos = select(DHE)
+      ch_prop = prop
+    in
+    [ OTEE_2(~tee_id, tid, $OTEE, $D, ~u, ~x_0, n_1, X_1, DHE, c_hs_traffic_s, c_finish_k, c_ap_traffic_s)
+    , !AgentInstance(~aid, $A, $D, prop, srv_pk) ]
+    // The $D in AgentInstance represents the assumption that the
+    // agent process is on the system at the time of challenge for
+    // the OTEE to measure the ch_prop.
+  --[ OTEEHonestPropertyRead($OTEE, $D, $A, prop)
+    , OTEESession($OTEE, ~u)
+    , OTEESessionAggrNonce($OTEE, ~u, n_1)
+    , OTEEPosition($OTEE, ch_pos)
+    , OTEEMeasure($OTEE, ch_pos, ch_prop) ]->
+    [ OTEE_3(~tee_id, tid, $OTEE, $D, ~u, ~x_0, n_1, X_1, DHE, c_hs_traffic_s, c_finish_k, c_ap_traffic_s, ch_pos, ch_prop, '0')
+    , Out(ch_pos) ]
+
+// An adversary that knows the position the OTEE is going to read
+// and the expected value there it can make the OTEE generate the
+// correct response.
+rule No_Interrupt_Prepared_Memory_Read:
+    let
+      ch_pos = select(DHE)
+      ch_prop = adv_prop
+    in
+    [ OTEE_2(~tee_id, tid, $OTEE, $D, ~u, ~x_0, n_1, X_1, DHE, c_hs_traffic_s, c_finish_k, c_ap_traffic_s)
+    , In(adv_prop) // Adversary provided properties
+    ]
+  --[ PreparedMemoryRead($OTEE, $D)
+    , RequireOSCompromise($D)
+    , OTEESession($OTEE, ~u)
+    , OTEESessionAggrNonce($OTEE, ~u, n_1)
+    , OTEEMeasure($OTEE, ch_pos, ch_prop) ]->
+    [ OTEE_3(~tee_id, tid, $OTEE, $D, ~u, ~x_0, n_1, X_1, DHE, c_hs_traffic_s, c_finish_k, c_ap_traffic_s, ch_pos, ch_prop, '0')
+    , Out(ch_pos) ]
+
+
+// Captures the fact that the adversary has a small probability to
+// make the result of the measurement correct even if the wrong
+// positions are measured.
+rule No_Interrupt_Forced_Memory_Read:
+    let
+      ch_pos = adv_pos
+      ch_prop = adv_prop
+    in
+    [ OTEE_2(~tee_id, tid, $OTEE, $D, ~u, ~x_0, n_1, X_1, DHE, c_hs_traffic_s, c_finish_k, c_ap_traffic_s)
+    , In(<adv_pos, adv_prop>) // Adversary forced position and properies
+    ]
+  --[ ForcedMemoryRead($OTEE, $D)
+    , RequireOSCompromise($D)
+    , OTEESession($OTEE, ~u)
+    , OTEESessionAggrNonce($OTEE, ~u, n_1)
+    , OTEEMeasure($OTEE, ch_pos, ch_prop) ]->
+    [ OTEE_3(~tee_id, tid, $OTEE, $D, ~u, ~x_0, n_1, X_1, DHE, c_hs_traffic_s, c_finish_k, c_ap_traffic_s, ch_pos, ch_prop, '0') ]
+
+// Given control over the system, the adversary can interrupt the
+// OTEE while it's running when it tries to read the challenge
+// position.
+rule Interrupt_OTEE_Memory_Read:
+    let
+      ch_pos = select(DHE)
+    in
+    [ OTEE_2(~tee_id, tid, $OTEE, $D, ~u, ~x_0, n_1, X_1, DHE, c_hs_traffic_s, c_finish_k, c_ap_traffic_s) ]
+  --[ RequireOSCompromise($D)
+    , InterruptOTEEMemoryRead($OTEE, $D)
+    , OTEESession($OTEE, ~u)
+    , OTEESessionAggrNonce($OTEE, ~u, n_1)
+    , OTEEMeasure($OTEE, ch_pos, 'null') ]->
+    [ OTEE_Interrupt(~tee_id, tid, $OTEE, $D, ~u, ~x_0, n_1, X_1, DHE, c_hs_traffic_s, c_finish_k, c_ap_traffic_s)
+    , Out(ch_pos)  // Interrupting the OTEE allows the adversary to
+                   // find out which properties from the agent are
+                   // measured
+    ]
+
+
+// Note that the agent does not have to come from the same
+// system. This models the adversary's ability to copy the whole agent
+// process from one system to another. We assume it cannot do this
+// without an interrupt because it would take too long.
+rule Continue_OTEE_Interrupt_With_Agent:
+    let
+      ch_pos = select(DHE)
+      ch_prop = prop
+    in
+    [ OTEE_Interrupt(~tee_id, tid, $OTEE, $D, ~u, ~x_0, n_1, X_1, DHE, c_hs_traffic_s, c_finish_k, c_ap_traffic_s)
+    , !AgentInstance(~aid, $A, $D2, prop, srv_pk) ]
+  --[ ResumeOTEE($OTEE, $D)
+    , RequireOSCompromise($D)
+    , RequireOSCompromise($D2)
+    , OTEESession($OTEE, ~u)
+    , OTEESessionAggrNonce($OTEE, ~u, n_1)
+    ]->
+    [ OTEE_3(~tee_id, tid, $OTEE, $D, ~u, ~x_0, n_1, X_1, DHE, c_hs_traffic_s, c_finish_k, c_ap_traffic_s, ch_pos, ch_prop, '1') ]
+
+
+rule OTEE_Challenge_Response:
+    let
+      client_transcript = <~u, 'g'^~x_0, n_1, X_1>
+      client_transcript_hash = h3(client_transcript)
+      client_finished = hmac(c_finish_k, <client_transcript, client_transcript_hash>)
+
+      w = h2(int_indicator, measure(ch_pos, ch_prop))
+
+      y = ~t
+      z = fz(n_1, ~t, <~u, w>)
+      sig = sign(<y, z, $OTEE, client_finished>, ~OTEE_ltk)
+
+    in
+    [ OTEE_3(~tee_id, tid, $OTEE, $D, ~u, ~x_0, n_1, X_1, DHE, c_hs_traffic_s, c_finish_k, c_ap_traffic_s, ch_pos, ch_prop, int_indicator)
+    , !OTEE_Ltk($OTEE, ~OTEE_ltk)
+    , Fr(~t) ]
+  --[ OTEEChallengeResponse($OTEE, $D, ~u)
+    , OTEESession($OTEE, ~u)
+    , OTEEWitness(w)
+    , OTEEChallengeResponseDH($OTEE, ~x_0)
+    , OTEEChallengeResponseKey($OTEE, DHE)
+    , OTEESessionAggrNonce($OTEE, ~u, n_1)
+    , OTEERevealSecretKey($OTEE, ~x_0) ]->
+    [
+    OTEEOut($OTEE, <~tee_id, tid,
+    'OTEE_challenge_response',
+    senc(client_finished, c_hs_traffic_s),
+    senc(<y, z, sig, $OTEE>, c_ap_traffic_s),
+//    senc(z, c_ap_traffic_s),
+//    senc(sig, c_ap_traffic_s),
+//    senc($OTEE, c_ap_traffic_s), // TODO: add to paper that OTEE sends identity
+//    senc(response, c_ap_traffic_s),
+//    senc(response_signature, c_ap_traffic_s),
+    ~x_0>) // release the client secret to the device
+    ]
+
+rule Device_Finished:
+    [ Device_3(~tid, eid, $D, $OTEE, ~aid, $A, srv_pk)
+//    , DeviceIn($D, <'OTEE_challenge_response', device_finished_enc, OTEE_response_enc, OTEE_response_sign_enc, DHE, OTEE_randomness>)
+    , DeviceIn($D, <eid, ~tid, 'OTEE_challenge_response', client_finished_enc, //y_enc, z_enc, sig_enc, otee_id_enc, x_0>) ]
+y_z_sig_otee_id_enc, x_0>)
+    ]
+-->
+    [ Out(<
+    client_finished_enc,
+    y_z_sig_otee_id_enc>) ]
+//    y_enc,
+//    z_enc,
+//    sig_enc,
+//    otee_id_enc>) ]
+
+rule Server_Finished:
+    let
+//      DHE = h2(X_0, ~x_1)
+      DHE = X_0^~x_1
+      //client_finished = sdec(client_finished_encrypted, client_handshake_traffic_secret)
+      //sdec(device_OTEE_response_encrypted, device_application_traffic_secret)
+      //OTEE_signature = sdec(device_OTEE_signature_encrypted, device_application_traffic_secret)
+
+      //y, z, sig, otee_id = sdec(y_z_sig_otee_id_enc, client_application_traffic_secret)
+
+      //y = sdec(y_enc, client_application_traffic_secret)
+      //z = sdec(z_enc, client_application_traffic_secret)
+      //sig = sdec(sig_enc, client_application_traffic_secret)
+      //otee_id = sdec(otee_id_enc, client_application_traffic_secret)
+
+      expected_client_transcript = <u, X_0, n_1, 'g'^~x_1>
+      expected_client_transcript_hash = h3(expected_client_transcript)
+      expected_client_finished = hmac(client_finished_key, <expected_client_transcript, expected_client_transcript_hash>)
+
+      //OTEE_randomness = sdec(IV1, device_application_traffic_secret)
+
+      //ch_pos = select(~h_s, OTEE_randomness)
+      //ch_prop = ~prop
+      //expected_response = h1(OTEE_randomness, ch_prop, '0', DHE, ~h_s, X_0, u, expected_device_finished)
+
+      //expected_response = <h4(DHE, measure(ch_pos, ch_prop), '0') >
+      //expected_OTEE_signature_data = <IV0, IV1, device_finished>
+
+    in
+    [ Aggressor_1($AGGR, ~prop, ~s, $A, ~ltk, u, X_0, n_1, ~x_1, client_handshake_traffic_secret, client_finished_key, client_application_traffic_secret)
+    , In(<senc(client_finished, client_handshake_traffic_secret),  // Assumption that the message is well formed since TLS uses AEAD
+    senc(<y, z, sig, otee_id>, client_application_traffic_secret), OTEE_pk,  NP_OTEE_signature>) // abusing Tamarin pattern matching for decryption
+    , !NP_Pk($NP, NP_pk)  // Assume the aggressor knows public key of NP
+//    , In(<client_finished_encrypted>)
+    ]
+  --[ //IN_Aggressor_Done(OTEE_randomness)
+    Eq(verify(NP_OTEE_signature, <otee_id, OTEE_pk>, NP_pk), true)
+    , Eq(client_finished, expected_client_finished)
+    , Eq(z, my_g2(~s, y))
+    , Eq(verify(sig, <y, z, otee_id, client_finished>, OTEE_pk), true)
+//    , Eq(verify(OTEE_signature, expected_OTEE_signature_data, OTEE_pk), true)
+    , AcceptVerificationWithAgent($AGGR, otee_id, $A, ~prop)
+    , AcceptVerification($AGGR, otee_id)
+    , AcceptVerificationDHE($AGGR, DHE)
+    , AcceptVerificationPosition($AGGR, select(DHE)) ]->
+    [ Aggressor_Done($AGGR) ]
+
+
+restriction Equality:
+    "All x y #i. Eq(x,y) @i ==> x = y"
+
+restriction Inequality:
+    "All x #i. Neq(x,x) @ #i ==> F"
+
+restriction Unique:
+    "All x #i #j. Unique(x) @i & Unique(x) @j ==> #i = #j"
+
+restriction OnlyOneNP:
+    "All x y #i #j. InitializeNP(x) @i & InitializeNP(y) @j ==> #i = #j"
+
+restriction AdversaryDeviceCompromise:
+    "All D #i. RequireOSCompromise(D) @i ==> Ex #j. OSCompromise(D) @j & #j < #i"
+
+restriction OnlyOneAggressor:
+    "All AGGR AGGR2 #i #j. AggressorInitialized(AGGR) @i & AggressorInitialized(AGGR2) @j ==> #i = #j"
+
+restriction AdversaryDoesNotExtractPropertiesFromOwnAgents:
+    "All A prop #i #j. AdversaryExtractAgentProperties(A, prop) @i & AdversaryCreateAgent(A, prop) @j ==> F"
+
+restriction OTEESessionCannotInterleaveWithSameNonce:
+    "All OTEE u n1 #i #j.
+    OTEESessionAggrNonce(OTEE, u, n1) @i &
+    OTEESessionAggrNonce(OTEE, u, n1) @j
+    ==> (All u_2 #k. OTEESessionAggrNonce(OTEE, u_2, n1) @k & i < k & k < j & not (u = u_2) ==> F)"
+
+restriction OTEESessionHasToFinishBeforeStartingNext:
+    "All OTEE u u_2 n_1 #i #j.
+    OTEESessionAggrNonce(OTEE, u, n_1) @i & OTEESessionAggrNonce(OTEE, u_2, n_1) @j & i < j & not (u = u_2)
+    ==> (Ex C #k. OTEEChallengeResponse(OTEE, C, u) @k & i < k & k < j)"
+
+
+lemma device_id_only_from_device [sources]:
+    "All D tid eid #i.
+    DeviceReceiveServerHello(D, tid, eid) @i
+    ==>
+    ((Ex #j. DeviceStartTLS(D, tid) @j & j < i)
+    & ((Ex #j. OTEEStartThread(eid) @j & j < i)
+      |(Ex #j. KU(eid) @j & j < i)))"
+
+
+/*
+lemma adversaryCannotCompromiseAggressorLTK [reuse]:
+    "(All AGGR ltk #i #j.
+    AggressorLTK(AGGR, ltk) @i & KU(ltk) @j
+    ==> F
+    )
+    "
+*/
+
+lemma adversaryCannotCompromiseNPLTK [reuse]:
+    "(All NP ltk #i #j.
+    InitializeNP_LTK(NP, ltk) @i & KU(ltk) @j
+    ==> F
+    )"
+
+
+lemma adversaryCannotRecoverDeviceDHSecret [reuse]:
+    "(All OTEE D x_0 x_0_inv X_0 u #i #j.
+    OTEEHelloDH(OTEE, D, x_0, x_0_inv, X_0) @i &
+    OTEESession(OTEE, u) @i &
+    KU(x_0) @j
+    ==> (Ex #k. OTEEChallengeResponseDH(OTEE, x_0) @k & OTEESession(OTEE, u) @k & #k < #j)
+    )"
+
+
+lemma adversaryCannotRecoverServerDHSecret [reuse]:
+    "(All AGGR x_0 x_1 X_1 #i #j.
+    AggrDH(AGGR, x_0, x_1, X_1) @i & KU(x_1) @j
+    ==> F
+    )"
+
+
+lemma adversaryCannotFindPropertiesFromAggressor [reuse]:
+    "
+    (All OTEE ch_pos ch_prop A #i #j #k.
+    OTEEMeasure(OTEE, ch_pos, ch_prop) @i & OUT_Aggressor_0(ch_prop) @j & AdversaryCreateAgent(A, ch_prop) @k ==> F)
+    "
+
+/*
+lemma adversaryCannotLearnDeviceDHShareBeforeEnd [reuse]:
+    "
+    (All OTEE D x_0 x_0_inv X_0 #i #j.
+    OTEEHelloDH(OTEE, D, x_0, x_0_inv, X_0) @i & KU(x_0) @j ==> (Ex x_0_inv X_1 #k. OTEEDH(OTEE, x_0, x_0_inv, X_1) @k & (#k < #j)))
+    " */
+
+
+lemma ifOTEEConnectsToServerThenShareMustBeOutputByTheServer [reuse]:
+    "
+    (All OTEE AGGR_pk n_1 x_0 x_0_inv X_1 AGGR #i #j.
+    OTEEReceiveServerHello(OTEE, AGGR_pk, n_1) @i & OTEEDH(OTEE, x_0, x_0_inv, X_1) @i & AggressorPK(AGGR, AGGR_pk) @j ==> (Ex X_0 x_1 #k. AggrDH(AGGR, X_0, x_1, X_1) @k)
+    )
+    "
+
+
+lemma ifServerAndOTEEHaveSameKeyThenTHeyCommunicated [reuse]:
+    "
+    (All OTEE DHE AGGR ltk pk_ltk #i #j.
+    OTEEDHKey(OTEE, DHE) @i & AggrDHKey(AGGR, DHE) @j & AggrServerHelloPK(AGGR, ltk, pk_ltk) @j ==> (Ex n_1. OTEEReceiveServerHello(OTEE, pk_ltk, n_1) @i)
+    )
+    "
+
+lemma OTEEOrder [reuse]:
+    "
+    (
+    All OTEE x_0 u pk_ltk n_1 #i #j.
+    OTEEChallengeResponseDH(OTEE, x_0) @i & OTEESession(OTEE, u) @i & OTEEReceiveServerHello(OTEE, pk_ltk, n_1) @j & OTEESession(OTEE, u) @j & #i < #j ==> F
+    )
+    "
+
+
+lemma AdversaryKnowsDHEOnlyIfItKnowsTheShare [reuse]:
+    "
+    (
+    All OTEE x_1 x_0 DHE #i #j.
+    PropertyHelper(OTEE, x_1, x_0, DHE) @i & KU(DHE) @j & #j < #i ==> (Ex #k. KU(x_1) @k & #k < #i)
+    )
+    "
+
+
+lemma twoOTEEsCannotHaveSameDHE [reuse]:
+    "
+    (All OTEE OTEE2 DHE #i #j.
+    OTEEDHKey(OTEE, DHE) @i & OTEEDHKey(OTEE2, DHE) @j & (not #i = #j) ==> F)
+    "
+
+
+lemma adversaryCannotKnowMeasurementPositionBeforeMeasurement [reuse]:
+    "
+    (All OTEE ch_pos ch_prop AGGR #i #j.
+    OTEEMeasure(OTEE, ch_pos, ch_prop) @i & AggrMeasurementSelection(AGGR, ch_pos) @j ==> ((not (Ex #k. KU(ch_pos) @k & #k < #i)) | Ex D. ForcedMemoryRead(OTEE, D) @i)
+    )
+    "
+
+/*lemma adversaryCannotKnowPropertyIfVerifierAccepts [reuse]:
+    "
+    (All AGGR OTEE A prop DHE ch_pos ch_prop u #i #j #k #l #m.
+    AcceptVerificationWithAgent(AGGR, OTEE, A, prop) @i &
+    AcceptVerificationDHE(AGGR, DHE) @i &
+    OTEEMeasure(OTEE, ch_pos, ch_prop) @j & OTEESession(OTEE, u) @j &
+    OTEEDHKey(OTEE, DHE) @k & OTEESession(OTEE, u) @k &
+    AggrDHKey(AGGR, DHE) @l &
+    KU(ch_prop) @m
+    ==> F)
+    "*/
+
+lemma adversaryCannotKnowServerLtk [reuse]:
+    "All AGGR ltk pk_ltk #i #j.
+    AggrServerHelloPK(AGGR, ltk, pk_ltk) @i &
+    KU(ltk) @j
+    ==> F
+    "
+
+/*lemma acceptVerificationFromOTEEImpliesSharedSecret [reuse]:
+    "All AGGR OTEE A prop #i.
+    AcceptVerificationWithAgent(AGGR, OTEE, A, prop) @i
+    ==>
+    (
+    (Ex DHE #m #n.
+    AggrDHKey(AGGR, DHE) @m
+    & OTEEDHKey(OTEE, DHE) @n)
+    )
+    "*/
+
+lemma adversaryCannotKnowEnclaveShareBeforeReveal [reuse]:
+    "All OTEE key #i #j.
+    OTEERevealSecretKey(OTEE, key) @i &
+    KU(key) @j & #j < #i
+    ==> F
+    "
+
+lemma adversaryCannotKnowDHEBeforeReveal [reuse]:
+    "All OTEE key DHE AGGR #i #k #l.
+    OTEERevealSecretKey(OTEE, key) @i &
+    OTEEChallengeResponseKey(OTEE, DHE) @i &
+    AggrDHKey(AGGR, DHE) @k &
+    KU(DHE) @l & #l < #i
+    ==> F
+    "
+
+lemma token_integrity [reuse]:
+    "All AGGR OTEE #i.
+    AcceptVerification(AGGR, OTEE) @i
+    ==>
+    (Ex D NP #j. OTEERegisteredOnDevice(NP, OTEE, D) @j & j < i)
+    "
+
+lemma aggressorDHKeyIsUnique [reuse]:
+    "All AGGR AGGR2 DHE #i #j.
+    AggrDHKey(AGGR, DHE) @i &
+    AggrDHKey(AGGR2, DHE) @j & not (AGGR = AGGR2)
+    ==> F"
+
+lemma adversaryCannotLearnOTEELtk [reuse]:
+    "All NP OTEE OTEE_ltk #i #j.
+    OTEERegisterOTEE(NP, OTEE, OTEE_ltk) @i &
+    KU(OTEE_ltk) @j
+    ==> F"
+
+lemma measurementPositionIsUnique [reuse]:
+    "All OTEE OTEE2 pos #i #j.
+    OTEEPosition(OTEE, pos) @i &
+    OTEEPosition(OTEE2, pos) @j & not (#i = #j)
+    ==> F
+    "
+
+lemma succeessfultVerificationImpliesEnclaveMeasuredCorrectProperties [reuse]:
+    "All AGGR OTEE A prop pos #i #j.
+    AcceptVerificationWithAgent(AGGR, OTEE, A, prop) @i &
+    AcceptVerificationPosition(AGGR, pos) @i &
+    OTEEPosition(OTEE, pos) @j
+    ==> Ex D. OTEEHonestPropertyRead(OTEE, D, A, prop) @j"
+
+
+lemma binding_integrity:
+    "All AGGR OTEE A prop #i.
+    AcceptVerificationWithAgent(AGGR, OTEE, A, prop) @i
+    ==>
+    (
+    (Ex NP D DHE #j #k #l #m #n.
+    OTEERegisteredOnDevice(NP, OTEE, D) @j
+    & OTEEHonestPropertyRead(OTEE, D, A, prop) @k
+    & AggressorCreateAgent(AGGR, A, prop) @l
+    & AggrDHKey(AGGR, DHE) @m
+    & OTEEDHKey(OTEE, DHE) @n)
+    )
+    "
+
+lemma executable_simple:
+    exists-trace
+    "Ex AGGR OTEE A prop NP #i #j.
+    AcceptVerificationWithAgent(AGGR, OTEE, A, prop) @i
+    & InitializeNP(NP) @j
+    & (All D #r2. OSCompromise(D) @r2 ==> F)
+    & (All NP2 #j2. InitializeNP(NP2) @j2 ==> #j = #j2) "
+
+end

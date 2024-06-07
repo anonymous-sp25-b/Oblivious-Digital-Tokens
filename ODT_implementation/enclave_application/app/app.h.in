@@ -1,0 +1,27 @@
+#ifndef APP_H
+#define APP_H
+
+#include "sgx_error.h"
+#include "sgx_eid.h"
+
+#define TOKEN_FILENAME "@TOKEN_FILENAME@"
+#define ENCLAVE_FILENAME "@SIGNED_ENCLAVE_FILENAME@"
+
+extern sgx_enclave_id_t global_eid;
+
+int major_version = @WITNESS_MEASUREMENT_VERSION_MAJOR@;
+int minor_version = @WITNESS_MEASUREMENT_VERSION_MINOR@;
+
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
+void heartbeat_start_trigger();
+void heartbeat_stop_trigger();
+
+#if defined(__cplusplus)
+}
+#endif
+
+
+#endif  // APP_H

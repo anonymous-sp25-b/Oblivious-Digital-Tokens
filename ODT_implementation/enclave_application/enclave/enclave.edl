@@ -1,0 +1,27 @@
+enclave {
+    from "sgx_tstdc.edl" import *;
+    from "sgx_socket.edl" import *;
+    from "sgx_tsgxssl.edl" import *;
+
+    from "sgx_pthread.edl" import *;
+
+  trusted {
+        public int launch_tls_client(
+                [in, string] char* server_name,
+                [in, string] char* server_port,
+                [in] uint64_t* stack_start_ptr,
+                [in] uint64_t* stack_end_ptr,
+                [in] uint64_t* heap_start_ptr,
+                [in] uint64_t* heap_end_ptr
+                );
+  };
+
+  untrusted {
+    void ocall_print_string([in, string] const char *str);
+    int ocall_close(int fd);
+    void ocall_get_current_time([out] uint64_t *p_current_time);
+    void heartbeat_start_trigger();
+    void heartbeat_stop_trigger();
+  };
+
+};
