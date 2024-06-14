@@ -1,9 +1,10 @@
-From 16efda4a36c696af9cdf6389a8f5f3a133d7d9b5 Mon Sep 17 00:00:00 2001
+From 89fd82016ef4a359cea4c8f2d4a9ea8801453e28 Mon Sep 17 00:00:00 2001
 From: Anonymous <anonymoussp25b@gmail.com>
 Date: Fri, 7 Jun 2024 12:11:28 +0200
 Subject: [PATCH] Implement ODT on top of OpenSSL client.
 
 ---
+ Configure                  |    2 +
  crypto/ec/build.info       |    3 +-
  crypto/ec/curve25519.c     |    4 +-
  crypto/ec/curve25519_mod.c | 5459 ++++++++++++++++++++++++++++++++++++
@@ -15,14 +16,27 @@ Subject: [PATCH] Implement ODT on top of OpenSSL client.
  include/openssl/tls1.h     |    2 +
  ssl/record/rec_layer_s3.c  |   75 +-
  ssl/record/ssl3_record.c   |    1 +
- ssl/s3_lib.c               |  286 +-
+ ssl/s3_lib.c               |  254 +-
  ssl/ssl_lib.c              |   13 +-
  ssl/ssl_local.h            |   28 +
- ssl/statem/statem_clnt.c   |   43 +
- 15 files changed, 9066 insertions(+), 9 deletions(-)
+ ssl/statem/statem_clnt.c   |   42 +
+ 16 files changed, 9035 insertions(+), 9 deletions(-)
  create mode 100644 crypto/ec/curve25519_mod.c
  create mode 100644 crypto/ec/monocypher.c
 
+diff --git a/Configure b/Configure
+index dd06aa4898..2d05980c06 100755
+--- a/Configure
++++ b/Configure
+@@ -1643,6 +1643,8 @@ $config{cxxflags} = [ map { (my $x = $_) =~ s/([\\\"])/\\$1/g; $x }
+ 
+ $config{openssl_api_defines} = [
+     "OPENSSL_CONFIGURED_API=".$config{api},
++    "ODT_VERIFY_STACK=0",
++    "ODT_VERIFY_HEAP=1",
+ ];
+ 
+ my @strict_warnings_collection=();
 diff --git a/crypto/ec/build.info b/crypto/ec/build.info
 index a511e887a9..44a1e4e1b9 100644
 --- a/crypto/ec/build.info
@@ -5526,7 +5540,7 @@ index 0000000000..fb15c44b30
 +}
 diff --git a/crypto/ec/monocypher.c b/crypto/ec/monocypher.c
 new file mode 100644
-index 0000000000..a8f02c5205
+index 0000000000..73482d0e46
 --- /dev/null
 +++ b/crypto/ec/monocypher.c
 @@ -0,0 +1,3059 @@
@@ -8233,7 +8247,7 @@ index 0000000000..a8f02c5205
 +{
 +  fe r, u, v, t1, t2, t3, pom;
 +	mono_mono_fe_frombytes_mask(r, hidden, 2); // r is encoded in 254 bits.
-+        print_fe(r);
++        //print_fe(r);
 +
 +        //printf("First part:\n");
 +	mono_fe_sq(u, r);  // u = r**2
@@ -8590,7 +8604,7 @@ index 0000000000..a8f02c5205
 +
 +//#endif
 diff --git a/crypto/engine/tb_rand.c b/crypto/engine/tb_rand.c
-index cd37228d17..02478e3c1f 100644
+index cd37228d17..9b10355846 100644
 --- a/crypto/engine/tb_rand.c
 +++ b/crypto/engine/tb_rand.c
 @@ -42,7 +42,7 @@ void ENGINE_register_all_RAND(void)
@@ -8598,7 +8612,7 @@ index cd37228d17..02478e3c1f 100644
  }
  
 -int dummy_ENGINE_set_default_RAND(ENGINE *e)
-+int dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_ENGINE_set_default_RAND(ENGINE *e)
++int dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_dummy_ENGINE_set_default_RAND(ENGINE *e)
  {
      if (e->rand_meth)
          return engine_table_register(&rand_table,
@@ -8874,7 +8888,7 @@ index 3c0b1323a4..9845aeedab 100644
                  goto end;
              }
 diff --git a/ssl/s3_lib.c b/ssl/s3_lib.c
-index 78d4f04056..a9b02e3419 100644
+index 78d4f04056..677e37d2fa 100644
 --- a/ssl/s3_lib.c
 +++ b/ssl/s3_lib.c
 @@ -3556,6 +3556,33 @@ long ssl3_ctrl(SSL *s, int cmd, long larg, void *parg)
@@ -8911,7 +8925,7 @@ index 78d4f04056..a9b02e3419 100644
      case SSL_CTRL_CHAIN:
          if (larg)
              return ssl_cert_set1_chain(s, NULL, (STACK_OF(X509) *)parg);
-@@ -4500,6 +4527,247 @@ int ssl3_renegotiate(SSL *s)
+@@ -4500,6 +4527,219 @@ int ssl3_renegotiate(SSL *s)
      return 1;
  }
  
@@ -8974,7 +8988,7 @@ index 78d4f04056..a9b02e3419 100644
 +    s2n(0xffff, p);
 +
 +
-+    uint8_t w[64];  // very secret number
++    uint8_t w[64];  // witness
 +
 +    uint8_t *stack_start = conn->stack_start;
 +    uint8_t *stack_end = conn->stack_end;
@@ -8993,23 +9007,24 @@ index 78d4f04056..a9b02e3419 100644
 +
 +    memcpy(curr_hash, s->handshake_secret, EVP_MAX_MD_SIZE / 2);
 +
-+    // STACK MEASUREMENT
-+    if (1 == 0) {  // DISABLE FOR NOW
-+      for (int i = 0; i < 5; i++) {
-+        unsigned char md_value[EVP_MAX_MD_SIZE];
-+        unsigned int md_size;
-+        EVP_Digest(curr_hash, EVP_MAX_MD_SIZE / 2, next_hash, &md_size, md, NULL);
++#if ODT_VERIFY_STACK == 1
++    // Stack measurement
++    for (int i = 0; i < 5; i++) {
++      unsigned char md_value[EVP_MAX_MD_SIZE];
++      unsigned int md_size;
++      EVP_Digest(curr_hash, EVP_MAX_MD_SIZE / 2, next_hash, &md_size, md, NULL);
 +
-+        unsigned int measure_location = 0;
-+        measure_location += (next_hash[0] << 24) + (next_hash[1] << 16) + (next_hash[2] << 8) + next_hash[3];
-+        measure_location %= (stack_end - stack_start);
++      unsigned int measure_location = 0;
++      measure_location += (next_hash[0] << 24) + (next_hash[1] << 16) + (next_hash[2] << 8) + next_hash[3];
++      measure_location %= (stack_end - stack_start);
 +
-+        sum_of_locations += stack_start[measure_location];
-+        memcpy(curr_hash, next_hash, 64);
-+      }
++      sum_of_locations += stack_start[measure_location];
++      memcpy(curr_hash, next_hash, 64);
 +    }
++#endif
 +
-+    // HEAP MEASUREMENT
++#if ODT_VERIFY_HEAP == 1
++    // Heap measurement
 +    for (int i = 0; i < 5; i++) {
 +      unsigned char md_value[EVP_MAX_MD_SIZE];
 +      unsigned int md_size;
@@ -9022,7 +9037,7 @@ index 78d4f04056..a9b02e3419 100644
 +      sum_of_locations += heap_start[measure_location];
 +      memcpy(curr_hash, next_hash, 64);
 +    }
-+
++#endif
 +
 +    {
 +      unsigned char md_value[EVP_MAX_MD_SIZE];
@@ -9032,15 +9047,7 @@ index 78d4f04056..a9b02e3419 100644
 +    EVP_MD_CTX_destroy(ctx);
 +    EVP_cleanup();
 +
-+    //for (int i = 0; i < 64; i++) w[i] = 0;
-+    //w[0] = 0b00110011;
-+    x25519_sc_reduce(w);
-+
-+    //printf("w clnt: ");
-+    //for (int i = 0; i < 32; i++) {
-+      //printf("%x", w[i]);
-+    //}
-+    //printf("\n");
++    x25519_sc_reduce(w);  // Final value of the witness
 +
 +    ge_p2 tmp_r;
 +    uint8_t zero_scalar[64];
@@ -9058,12 +9065,6 @@ index 78d4f04056..a9b02e3419 100644
 +    ge_frombytes_vartime(&conn->uw, conn->uw_bytes);
 +    ge_p3_to_cached(&conn->uw_cached, &conn->uw);
 +
-+    //printf("prep uw clnt: ");
-+    //for (int i = 0; i < 32; i++) {
-+      //printf("%x", conn->uw_bytes[i]);
-+    //}
-+    //printf("\n");
-+
 +    ge_double_scalarmult_vartime(&tmp_r, conn->t, &conn->uw, zero_scalar);  // (u^w)^t
 +    ge_tobytes(conn->uwt_bytes, &tmp_r);
 +    ge_frombytes_vartime(&conn->uwt, conn->uwt_bytes);
@@ -9072,44 +9073,37 @@ index 78d4f04056..a9b02e3419 100644
 +    ge_sub(&conn->z_p1p1, &conn->vt, &conn->uwt_cached);  // z = v^t / u^wt
 +    ge_p1p1_to_p3(&conn->z, &conn->z_p1p1);
 +    ge_p3_to_cached(&conn->z_cached, &conn->z);
-+    ge_tobytes(conn->z_bytes, &conn->z);
-+    //printf("prep z: ");
-+    //for (int i = 0; i < 32; i++) {
-+      //printf("%x", conn->z_bytes[i]);
-+    //}
-+    //printf("\n");
-+
-+    //conn->uspjeh = 1;
-+
++    ge_p3_tobytes(conn->z_bytes, &conn->z);
 +
 +    unsigned char *som = p;  // start of message
-+    //printf("snd y: ");
++
++     // Add y to the heartbeat
 +    for (int i = 0; i < 32; i++) {
 +      p[0] = sc->y_bytes[i];
 +      p++;
-+      //printf("%x", sc->y_bytes[i]);
 +    }
-+    //printf("\n");
 +
-+    //printf("snd z: ");
++    // Add z to the heartbeat
 +    for (int i = 0; i < 32; i++) {
 +      p[0] = sc->z_bytes[i];
 +      p++;
-+      //printf("%x", sc->z_bytes[i]);
 +    }
-+    //printf("\n");
 +
 +    uint8_t handshake_secret_hash[EVP_MAX_MD_SIZE];  // 64 bytes
 +    {
++      // Calculate handshake secret hash
 +      unsigned int md_size;
 +      EVP_Digest(s->handshake_secret, EVP_MAX_MD_SIZE / 2, handshake_secret_hash, &md_size, md, NULL);
 +    }
 +
++    // Add the handshake secret hash to the hearbeat
 +    for (int i = 0; i < 64; i++) {
 +      p[0] = handshake_secret_hash[i];
 +      p++;
 +    }
 +
++    // We derive the enclave's public key on-the-fly. Normally it
++    // would be provisioned when the enclave is registered.
 +    uint8_t seed[32];
 +    for (int i = 0; i < 32; i++) seed[i] = i;
 +
@@ -9117,8 +9111,6 @@ index 78d4f04056..a9b02e3419 100644
 +
 +    crypto_eddsa_key_pair(secret_key, public_key, seed);
 +    crypto_eddsa_sign(p, secret_key, som, 32 + 32 + 64); p += 64;
-+
-+    //  som[10] = 13; Used to test if the signature fails
 +
 +    s2n(0xffff, p); // 2 bytes;
 +    s2n(0xffff, p);
@@ -9129,13 +9121,7 @@ index 78d4f04056..a9b02e3419 100644
 +    s2n(0xffff, p);
 +    s2n(0xffff, p);
 +    s2n(0xffff, p);
-+    //s2n(s->tlsext_hb_seq, p);
-+    /* 16 random bytes */
-+    /*if (RAND_bytes(p, 16) <= 0) {
-+        SSLerr(SSL_F_DTLS1_HEARTBEAT, ERR_R_INTERNAL_ERROR);
-+        goto err;
-+        }*/
-+    //p += 16;
++
 +    /* Random padding */
 +    if (RAND_bytes(p, padding) <= 0) {
 +        SSLerr(SSL_F_DTLS1_HEARTBEAT, ERR_R_INTERNAL_ERROR);
@@ -9159,7 +9145,7 @@ index 78d4f04056..a9b02e3419 100644
  /*
   * Check if we are waiting to do a renegotiation and if so whether now is a
   * good time to do it. If |initok| is true then we are being called from inside
-@@ -4568,14 +4836,28 @@ int ssl_fill_hello_random(SSL *s, int server, unsigned char *result, size_t len,
+@@ -4568,14 +4808,24 @@ int ssl_fill_hello_random(SSL *s, int server, unsigned char *result, size_t len,
          send_time = (s->mode & SSL_MODE_SEND_SERVERHELLO_TIME) != 0;
      else
          send_time = (s->mode & SSL_MODE_SEND_CLIENTHELLO_TIME) != 0;
@@ -9175,18 +9161,14 @@ index 78d4f04056..a9b02e3419 100644
 +        ret = 1;
 +        uint8_t u_exp[64];
 +        RAND_bytes(u_exp, 64);  // Generate a random number up to 2^256
-+        //for (int i = 0; i < 64; i++) u_exp[i] = 0;
-+        //u_exp[0] = 10;
 +        x25519_sc_reduce(u_exp);
-+        ge_scalarmult_base(&s->u, u_exp);  // u
-+        ge_tobytes(s->u_bytes, &s->u);
 +
-+        //printf("snd u: ");
++        ge_scalarmult_base(&s->u, u_exp);  // u
++        ge_p3_tobytes(s->u_bytes, &s->u);
++
 +        for (int i = 0; i < len; i++) {
 +          result[i] = s->u_bytes[i];
-+          //printf("%x", s->u_bytes[i]);
 +        }
-+        //printf("\n");
      }
  
      if (ret > 0) {
@@ -9275,10 +9257,10 @@ index 5fb1feb801..bdd09ca640 100644
  __owur int dtls1_do_write(SSL *s, int type);
  void dtls1_set_message_header(SSL *s,
 diff --git a/ssl/statem/statem_clnt.c b/ssl/statem/statem_clnt.c
-index 3cd1ee2d3d..a42faa5290 100644
+index 3cd1ee2d3d..174e96ca80 100644
 --- a/ssl/statem/statem_clnt.c
 +++ b/ssl/statem/statem_clnt.c
-@@ -1414,6 +1414,49 @@ MSG_PROCESS_RETURN tls_process_server_hello(SSL *s, PACKET *pkt)
+@@ -1414,6 +1414,48 @@ MSG_PROCESS_RETURN tls_process_server_hello(SSL *s, PACKET *pkt)
          }
      }
  
@@ -9291,6 +9273,7 @@ index 3cd1ee2d3d..a42faa5290 100644
 +    fe curve_u, curve_v;
 +    crypto_elligator_map(curve_u, curve_v, bytes_elligator);
 +
++    // Transform from Edwards to Montgomery coordinates
 +    fe curve_x, curve_y;
 +    {
 +      fe pom1, pom2;
@@ -9314,20 +9297,18 @@ index 3cd1ee2d3d..a42faa5290 100644
 +    ge_p3_0(&zero_p3);
 +    ge_madd(&tmp_p1p1, &zero_p3, &tmp_precomp);
 +    ge_p1p1_to_p3(&tmp_p3, &tmp_p1p1);
-+    ge_tobytes(conn->v_bytes, &tmp_p3);
++    ge_p3_tobytes(conn->v_bytes, &tmp_p3);
 +
 +    ge_frombytes_vartime(&conn->v, conn->v_bytes);
 +
 +    RAND_bytes(conn->t, 64);
-+    //for (int i = 0; i < 64; i++) conn->t[i] = 0;
-+    //conn->t[0] = 12;
 +    x25519_sc_reduce(conn->t);
 +    ge_scalarmult_base(&conn->y, conn->t);  // y = g^t
-+    ge_tobytes(conn->y_bytes, &conn->y);
++    ge_p3_tobytes(conn->y_bytes, &conn->y);
 +
      /* Get the session-id. */
      if (!PACKET_get_length_prefixed_1(pkt, &session_id)) {
          SSLfatal(s, SSL_AD_DECODE_ERROR, SSL_R_LENGTH_MISMATCH);
 -- 
-2.44.0
+2.45.1
 

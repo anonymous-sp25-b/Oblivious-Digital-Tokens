@@ -1,9 +1,10 @@
-From c72fc97eba72b9811d93edb7c6e26920dab4a97d Mon Sep 17 00:00:00 2001
+From 6e34354c7af97e994223b6e33a0a3d9c3fb9d055 Mon Sep 17 00:00:00 2001
 From: Anonymous <anonymoussp25b@gmail.com>
 Date: Fri, 7 Jun 2024 12:16:11 +0200
 Subject: [PATCH] Implement ODT on top of OpenSSL server.
 
 ---
+ Configure                       |    7 +
  apps/s_client.c                 |   13 +
  crypto/ec/build.info            |    2 +-
  crypto/ec/curve25519.c          |    4 +-
@@ -14,17 +15,35 @@ Subject: [PATCH] Implement ODT on top of OpenSSL server.
  include/openssl/ssl3.h          |   11 +
  include/openssl/tls1.h          |    3 +
  ssl/record/methods/tls_common.c |    5 +-
- ssl/record/rec_layer_s3.c       |   89 +-
+ ssl/record/rec_layer_s3.c       |   99 +-
  ssl/s3_lib.c                    |  225 +-
  ssl/ssl_local.h                 |   43 +
  ssl/statem/extensions_srvr.c    |    3 +
  ssl/statem/statem_clnt.c        |   71 +-
- ssl/statem/statem_srvr.c        |  271 ++
+ ssl/statem/statem_srvr.c        |  235 ++
  ssl/tls13_enc.c                 |    4 +-
- 17 files changed, 9340 insertions(+), 11 deletions(-)
+ 18 files changed, 9321 insertions(+), 11 deletions(-)
  create mode 100644 crypto/ec/curve25519_mod.c
  create mode 100644 crypto/ec/monocypher.c
 
+diff --git a/Configure b/Configure
+index cac277f45c..8ac4062361 100755
+--- a/Configure
++++ b/Configure
+@@ -1722,6 +1722,13 @@ $config{cxxflags} = [ map { (my $x = $_) =~ s/([\\\"])/\\$1/g; $x }
+ 
+ $config{openssl_api_defines} = [
+     "OPENSSL_CONFIGURED_API=".$config{api},
++    "ODT_VERIFY_STACK=0",
++    "ODT_VERIFY_HEAP=1",
++    "ODT_PERFORM_TIMING_MEASUREMENT=0",
++    "ODT_PRINT_DEBUG=1",
++    "ODT_HEAP_LENGTH=10473472",
++    "ODT_STACK_LENGTH=4202496",
++    "ODT_STACK_OFFSET=5584",
+ ];
+ 
+ my @strict_warnings_collection=();
 diff --git a/apps/s_client.c b/apps/s_client.c
 index 78a44755cb..60996294e5 100644
 --- a/apps/s_client.c
@@ -107,7 +126,7 @@ index cae2ac101d..8c5e11fc7e 100644
  {
 diff --git a/crypto/ec/curve25519_mod.c b/crypto/ec/curve25519_mod.c
 new file mode 100644
-index 0000000000..61787b2154
+index 0000000000..6bac7ed53c
 --- /dev/null
 +++ b/crypto/ec/curve25519_mod.c
 @@ -0,0 +1,5429 @@
@@ -1504,7 +1523,7 @@ index 0000000000..61787b2154
 +    h[9] = (int32_t)h9;
 +}
 +
-+static void fe_invert(fe out, const fe z)
++static void fe_invert(fe out, fe z)
 +{
 +    fe t0;
 +    fe t1;
@@ -8823,10 +8842,10 @@ index c2e21e6d54..7c5948f38c 100644
      if (rl->msg_callback != NULL)
          rl->msg_callback(0, rl->version, SSL3_RT_INNER_CONTENT_TYPE, &rec->type,
 diff --git a/ssl/record/rec_layer_s3.c b/ssl/record/rec_layer_s3.c
-index 49c408aba4..ee0460b201 100644
+index 49c408aba4..0b4c060415 100644
 --- a/ssl/record/rec_layer_s3.c
 +++ b/ssl/record/rec_layer_s3.c
-@@ -1063,8 +1063,93 @@ int ssl3_read_bytes(SSL *ssl, uint8_t type, uint8_t *recvd_type,
+@@ -1063,8 +1063,103 @@ int ssl3_read_bytes(SSL *ssl, uint8_t type, uint8_t *recvd_type,
           * no progress is being made and the peer continually sends unrecognised
           * record types, using up resources processing them.
           */
@@ -8858,17 +8877,26 @@ index 49c408aba4..ee0460b201 100644
 +
 +      // Verify signature directly from the buffer
 +      if (crypto_eddsa_check(rr->data + 7 + 32 + 32 + 64, public_key, rr->data + 7, 32 + 32 + 64) == -1) {
-+        //printf("FAILED TO VERIFY SIGNATURE\n");
++#if ODT_PRINT_DEBUG == 1
++        printf("Failed to verify signature\n");
++#endif
 +        goto signature_check_fail;
 +      } else {
-+        //printf("Signature check success\n");
++#if ODT_PRINT_DEBUG == 1
++        printf("Signature check success\n");
++#endif
 +      }
 +
++      // Verify hash directly from the buffer
 +      if (memcmp(rr->data + 7 + 32 + 32, handshake_secret_hash, 64) != 0) {
-+        //printf("FAILED TO VERIFY HANDSHAKE HASH\n");
++#if ODT_PRINT_DEBUG == 1
++        printf("Failed to verify handshake hash\n");
++#endif
 +        goto signature_check_fail;
 +      } else {
-+        //printf("Handshake secret check success\n");
++#if ODT_PRINT_DEBUG == 1
++        printf("Handshake secret check success\n");
++#endif
 +      }
 +
 +      // Read y and z from heartbeat message
@@ -8903,15 +8931,16 @@ index 49c408aba4..ee0460b201 100644
 +
 +      int good = 1;
 +      for (int i = 0; i < 32; i++) {
-+        if (equal(result_bytes[i], zero_bytes[i])) {
-+          //printf(".");
-+        } else {
++        if (!equal(result_bytes[i], zero_bytes[i])) {
 +          good = 0;
-+          //printf("x");
++          break;
 +        }
 +      }
-+      //if (good) printf("ODT verification success\n\n\n");
-+      //else printf("ODT verification failure\n\n\n");
++
++#if ODT_PRINT_DEBUG == 1
++      if (good) printf("ODT verification success\n\n\n");
++      else printf("ODT verification failure\n\n\n");
++#endif
 +
 +    signature_check_fail:
 +
@@ -8923,7 +8952,7 @@ index 49c408aba4..ee0460b201 100644
      case SSL3_RT_ALERT:
      case SSL3_RT_HANDSHAKE:
 diff --git a/ssl/s3_lib.c b/ssl/s3_lib.c
-index d1497b115b..ca1f3d2aa7 100644
+index d1497b115b..43171e9e37 100644
 --- a/ssl/s3_lib.c
 +++ b/ssl/s3_lib.c
 @@ -3587,6 +3587,25 @@ long ssl3_ctrl(SSL *s, int cmd, long larg, void *parg)
@@ -9076,7 +9105,7 @@ index d1497b115b..ca1f3d2aa7 100644
 +    ge_sub(&sc->z_p1p1, &sc->vt, &sc->uwt_cached);  // z = v^t / u^wt
 +    ge_p1p1_to_p3(&sc->z, &sc->z_p1p1);
 +    ge_p3_to_cached(&sc->z_cached, &sc->z);
-+    ge_tobytes(sc->z_bytes, &sc->z);
++    ge_p3_tobytes(sc->z_bytes, &sc->z);
 +   // printf("prep z: ");
 +    for (int i = 0; i < 32; i++) {
 +     // printf("%x", sc->z_bytes[i]);
@@ -9176,7 +9205,7 @@ index d1497b115b..ca1f3d2aa7 100644
 +        RAND_bytes(u_exp, 64);  // Generate a random number up to 2^256
 +        x25519_sc_reduce(u_exp);
 +        ge_scalarmult_base(&s->u, u_exp);  // u
-+        ge_tobytes(s->u_bytes, &s->u);
++        ge_p3_tobytes(s->u_bytes, &s->u);
 +
 +        for (int i = 0; i < len; i++) {
 +          result[i] = s->u_bytes[i];
@@ -9299,7 +9328,7 @@ index 21db977c88..daf31cd52e 100644
  #else
      return EXT_RETURN_FAIL;
 diff --git a/ssl/statem/statem_clnt.c b/ssl/statem/statem_clnt.c
-index 2233dd8f48..7d30e3c3df 100644
+index 2233dd8f48..f12ffd56ff 100644
 --- a/ssl/statem/statem_clnt.c
 +++ b/ssl/statem/statem_clnt.c
 @@ -28,6 +28,9 @@
@@ -9359,7 +9388,7 @@ index 2233dd8f48..7d30e3c3df 100644
 +    ge_p3_0(&zero_p3);
 +    ge_madd(&tmp_p1p1, &zero_p3, &tmp_precomp);
 +    ge_p1p1_to_p3(&tmp_p3, &tmp_p1p1);
-+    ge_tobytes(conn->v_bytes, &tmp_p3);
++    ge_p3_tobytes(conn->v_bytes, &tmp_p3);
 +
 +    ge_frombytes_vartime(&conn->v, conn->v_bytes);
 +
@@ -9374,7 +9403,7 @@ index 2233dd8f48..7d30e3c3df 100644
 +    //conn->t[0] = 12;
 +    x25519_sc_reduce(conn->t);
 +    ge_scalarmult_base(&conn->y, conn->t);  // y = g^t
-+    ge_tobytes(conn->y_bytes, &conn->y);
++    ge_p3_tobytes(conn->y_bytes, &conn->y);
 +    /*printf("prep y: ");
 +    for (int i = 0; i < 32; i++) {
 +      printf("%x", conn->y_bytes[i]);
@@ -9395,7 +9424,7 @@ index 2233dd8f48..7d30e3c3df 100644
                                         : PACKET_remaining(pkt) != ticklen)) {
          SSLfatal(s, SSL_AD_DECODE_ERROR, SSL_R_LENGTH_MISMATCH);
 diff --git a/ssl/statem/statem_srvr.c b/ssl/statem/statem_srvr.c
-index 99085a4cc1..4533fc8e34 100644
+index 99085a4cc1..5c6c1b080f 100644
 --- a/ssl/statem/statem_srvr.c
 +++ b/ssl/statem/statem_srvr.c
 @@ -28,6 +28,12 @@
@@ -9474,21 +9503,26 @@ index 99085a4cc1..4533fc8e34 100644
      if (!tls_construct_extensions(s, pkt,
                                    s->hello_retry_request == SSL_HRR_PENDING
                                        ? SSL_EXT_TLS1_3_HELLO_RETRY_REQUEST
-@@ -2472,6 +2499,248 @@ CON_FUNC_RETURN tls_construct_server_hello(SSL_CONNECTION *s, WPACKET *pkt)
+@@ -2472,6 +2499,212 @@ CON_FUNC_RETURN tls_construct_server_hello(SSL_CONNECTION *s, WPACKET *pkt)
          return CON_FUNC_ERROR;
      }
  
 +    // Borrowed from https://stackoverflow.com/questions/361363/how-to-measure-time-in-milliseconds-using-ansi-c
++#if ODT_PERFORM_TIMING_MEASUREMENT == 1
 +    struct timeval tval_start_nonce_gen, tval_after_nonce_gen,
 +    tval_start_elligator_gen, tval_after_elligator_gen, tval_result;
 +
 +    gettimeofday(&tval_start_nonce_gen, NULL);
++#endif
 +
 +    memcpy(s->u_bytes, s->random_copy, SSL3_RANDOM_SIZE);  // Retrieve u from ClientHello
 +
 +    // Convert from bytes to ge_p3
 +    if (ge_frombytes_vartime(&s->u, s->u_bytes) == -1) {
-+      //printf("Incoming value is not a group element\n");
++#if ODT_PRINT_DEBUG == 1
++      printf("Incoming value is not a group element\n");
++#endif
++
 +      // If conversion fails, we use the base point for our subsequent
 +      // computations.
 +      uint8_t one_scalar[64];
@@ -9500,8 +9534,7 @@ index 99085a4cc1..4533fc8e34 100644
 +      ge_scalarmult_base(&s->u, one_scalar);
 +    }
 +
-+    uint8_t w[64];  // very secret number
-+
++    uint8_t w[64];  // witness
 +
 +    EVP_MD_CTX *ctx;
 +    const EVP_MD *md;
@@ -9513,75 +9546,63 @@ index 99085a4cc1..4533fc8e34 100644
 +    unsigned int sum_of_locations = 0;
 +    unsigned int *large_array_expected;
 +
-+    if (1 == 0) {  // Skip stack measurement for now
-+      large_array_expected = malloc(1024 * 1024 * sizeof(int));
-+      unsigned int seed = 0b00110100010101100111111100010011;
-+      for (int i = 0; i < 1024 * 1024; i++) {
-+        large_array_expected[i] = seed;
-+        if (seed & 1) {
-+          seed = (seed >> 1) ^ 0x80000A26u;
-+        } else {
-+          seed = (seed >> 1);
-+        }
++#if ODT_VERIFY_STACK == 1
++    // Prepare the expected stack memory
++    large_array_expected = malloc(1024 * 1024 * sizeof(int));
++    unsigned int seed = 0b00110100010101100111111100010011;
++    for (int i = 0; i < 1024 * 1024; i++) {
++      large_array_expected[i] = seed;
++      if (seed & 1) {
++        seed = (seed >> 1) ^ 0x80000A26u;
++      } else {
++        seed = (seed >> 1);
 +      }
 +    }
-+   // printf("Large array generated\n");
-+    //for (int i = 0; i < 10; i++) {
-+     // printf("V: %032b %08x\nC: %032b\n", large_array_expected[i], large_array_expected[i], 0x80000A26u);
-+    //}
-+   // printf("\n");
-+
-+    //uint8_t *large_array_char = large_array_expected;
-+   // printf("%d\n", sizeof(char));
-+    //for (int i = 0; i < 20; i++) {
-+     // printf("%08b ", *(large_array_char + i));
-+    //}
-+   // printf("\n");
-+
-+    //s->handshake_secret[0] += 1;
++#endif
 +
 +    // Retrieve the handshake secret from the current session
 +    memcpy(curr_hash, s->handshake_secret, EVP_MAX_MD_SIZE / 2);
 +
-+    // STACK MEASUREMENT
-+    if (1 == 0) {  // Skip stack measurement for now
-+      printf("Performing stack measurement\n");
-+      for (int i = 0; i < 5; i++) {
-+        // printf("Measurement %d\n", i + 1);
-+        unsigned char md_value[EVP_MAX_MD_SIZE];
-+        unsigned int md_size;
-+        EVP_Digest(curr_hash, EVP_MAX_MD_SIZE / 2, next_hash, &md_size, md, NULL);
++#if ODT_VERIFY_STACK == 1
++#if ODT_PRINT_DEBUG == 1
++    printf("Performing stack measurement\n");
++#endif
 +
-+        // printf("Calculating measurement location\n");
-+
-+        unsigned int measure_location = 0;
-+        measure_location += (next_hash[0] << 24) + (next_hash[1] << 16) + (next_hash[2] << 8) + next_hash[3];
-+        measure_location %= 4202496;
-+
-+        // printf("Location to be measured: %u\n", measure_location);
-+
-+        if (measure_location >= 5600 && measure_location < 5600 + 1024 * 1024 * 4) {
-+          sum_of_locations += ((uint8_t*)large_array_expected)[measure_location - 5600];
-+        }
-+        memcpy(curr_hash, next_hash, 64);
-+      }
-+    }
-+
-+    FILE *heap_dump = fopen("app_heap_dump", "rb");
-+
-+    // HEAP MEASUREMENT
-+    //printf("Performing heap measurement\n");
 +    for (int i = 0; i < 5; i++) {
-+      // printf("Measurement %d\n", i + 1);
 +      unsigned char md_value[EVP_MAX_MD_SIZE];
 +      unsigned int md_size;
 +      EVP_Digest(curr_hash, EVP_MAX_MD_SIZE / 2, next_hash, &md_size, md, NULL);
 +
-+      // printf("Calculating measurement location\n");
++      unsigned int measure_location = 0;
++      measure_location += (next_hash[0] << 24) + (next_hash[1] << 16) + (next_hash[2] << 8) + next_hash[3];
++      measure_location %= ODT_STACK_LENGTH;
++
++      // Measure memory if we are inside of the known area.
++      if (measure_location >= ODT_STACK_OFFSET && measure_location < ODT_STACK_OFFSET + 1024 * 1024 * 4) {
++        sum_of_locations += ((uint8_t*)large_array_expected)[measure_location - ODT_STACK_OFFSET];
++      }
++
++      memcpy(curr_hash, next_hash, 64);
++    }
++
++    free(large_array_expected);
++#endif
++
++#if ODT_VERIFY_HEAP == 1
++    FILE *heap_dump = fopen("app_heap_dump", "rb");
++
++#if ODT_PRINT_DEBUG == 1
++    printf("Performing heap measurement\n");
++#endif
++    for (int i = 0; i < 5; i++) {
++      unsigned char md_value[EVP_MAX_MD_SIZE];
++      unsigned int md_size;
++      EVP_Digest(curr_hash, EVP_MAX_MD_SIZE / 2, next_hash, &md_size, md, NULL);
++
 +
 +      unsigned int measure_location = 0;
 +      measure_location += (next_hash[0] << 24) + (next_hash[1] << 16) + (next_hash[2] << 8) + next_hash[3];
-+      measure_location %= 10473472;  // length of heap
++      measure_location %= ODT_HEAP_LENGTH;
 +
 +      fseek(heap_dump, measure_location, SEEK_SET);  // Seek to measurement location
 +      uint8_t heap_value;
@@ -9592,11 +9613,8 @@ index 99085a4cc1..4533fc8e34 100644
 +    }
 +
 +    fclose(heap_dump);
-+    if (1 == 0) {  // Skip stack measurement for now
-+      free(large_array_expected);
-+    }
++#endif
 +
-+   // printf("Memory freed\n");
 +
 +    {
 +      unsigned char md_value[EVP_MAX_MD_SIZE];
@@ -9606,11 +9624,7 @@ index 99085a4cc1..4533fc8e34 100644
 +    EVP_MD_CTX_destroy(ctx);
 +    EVP_cleanup();
 +
-+
-+    uint8_t tmp_secret[32];
-+    size_t secret_len;
-+
-+    x25519_sc_reduce(w);
++    x25519_sc_reduce(w);  // Final value of the witness
 +
 +    ge_p2 tmp_r;
 +    uint8_t zero_scalar[64];
@@ -9624,36 +9638,35 @@ index 99085a4cc1..4533fc8e34 100644
 +    ge_frombytes_vartime(&s->uw, s->uw_bytes);
 +    ge_p3_to_cached(&s->uw_cached, &s->uw);
 +
-+
++#if ODT_PERFORM_TIMING_MEASUREMENT == 1
 +    gettimeofday(&tval_start_elligator_gen, NULL);
++#endif
 +
-+    uint8_t s_bytes[32];
-+    uint8_t hidden_point[32];
-+    uint8_t mapped[32];
++    uint8_t hidden_point[32];  // Stores the point hidden by Elligator
 +    int res;
 +
-+    fe curve_u, curve_v;
-+
 +    do {
++      uint8_t s_bytes[32];
++
 +      RAND_bytes(s->s_exp, 64);
 +      x25519_sc_reduce(s->s_exp);
 +      ge_scalarmult_base(&s->s, s->s_exp);  // g^s from paper
 +
-+      ge_tobytes(s_bytes, &s->s);
++      ge_p3_tobytes(s_bytes, &s->s);
 +
 +      ge_add(&s->v_p1p1, &s->s, &s->uw_cached);  // v = g^s * u^w
 +      ge_p1p1_to_p3(&s->v, &s->v_p1p1);
 +      ge_p3_tobytes(s->v_bytes, &s->v);
 +
++      // Montgomery to Edwards transformation
 +      fe v_x, inv_z, v_y;
-+      fe_invert(inv_z, &s->v.Z);
-+      mono_fe_mul(v_x, &s->v.X, inv_z);
-+      mono_fe_mul(v_y, &s->v.Y, inv_z);
++      fe_invert(inv_z, s->v.Z);
++      mono_fe_mul(v_x, s->v.X, inv_z);
++      mono_fe_mul(v_y, s->v.Y, inv_z);
 +      uint8_t v_x_bytes[32];
 +      mono_fe_tobytes(v_x_bytes, v_x);
 +      uint8_t v_y_bytes[32];
 +      mono_fe_tobytes(v_y_bytes, v_y);
-+
 +      fe edw_u, edw_v;
 +      {
 +        fe pom1, pom2;
@@ -9666,7 +9679,7 @@ index 99085a4cc1..4533fc8e34 100644
 +        mono_fe_mul(edw_v, edw_v, mono_sqrtA);
 +      }
 +
-+      // For Ed25519
++      // The following code works only on Edwards coordinates
 +      uint8_t edw_u_bytes[32];
 +      mono_fe_tobytes(edw_u_bytes, edw_u);
 +      uint8_t tweak;
@@ -9678,52 +9691,32 @@ index 99085a4cc1..4533fc8e34 100644
 +
 +      if (res != 0) continue;
 +
-+      crypto_elligator_map(curve_u, curve_v, hidden_point);
-+      uint8_t curve_u_bytes[32];
-+      mono_fe_tobytes(curve_u_bytes, curve_u);
-+      uint8_t curve_v_bytes[32];
-+      mono_fe_tobytes(curve_v_bytes, curve_v);
-+      //printf("Restored edw_u: "); print_fe_2(curve_u);
-+      //printf("Restored edw_v: "); print_fe_2(curve_v);
-+
-+      // Transform edwards to montgomery coordinates
-+      fe curve_x, curve_y;
-+      {
-+        fe pom1, pom2;
-+        mono_fe_sub(pom1, curve_u, mono_fe_one);
-+        mono_fe_add(pom2, curve_u, mono_fe_one);
-+        fe_invert(pom2, pom2);
-+        mono_fe_mul(curve_y, pom1, pom2);
-+        fe_invert(pom1, curve_v);
-+        mono_fe_mul(curve_x, curve_u, pom1);
-+        mono_fe_mul(curve_x, mono_sqrtA, curve_x);
-+      }
-+
-+      //printf("Restored montg_x: "); print_fe_2(curve_x);
-+      //printf("Restored montg_y: "); print_fe_2(curve_y);
 +    } while (res != 0);
 +
++#if ODT_PERFORM_TIMING_MEASUREMENT == 1
 +    gettimeofday(&tval_after_elligator_gen, NULL);
++#endif
 +
 +    // Inject the modified randomness directly into the ServerHello
 +    // packet buffer
 +    for (int i = 0; i < 32; i++) {
-+      //wpacket_curr[i + 2] = s->v_bytes[i]; // offset 2 bytes to skip
-+                                           // TLS version
-+      wpacket_curr[i + 2] = hidden_point[i];
++      wpacket_curr[i + 2] = hidden_point[i]; // offset 2 bytes to skip
++                                             // TLS version
 +    }
 +
++#if ODT_PERFORM_TIMING_MEASUREMENT == 1
 +    gettimeofday(&tval_after_nonce_gen, NULL);
 +    timersub(&tval_after_nonce_gen, &tval_start_nonce_gen, &tval_result);
 +    printf("%ld.%06ld, ", (long int)tval_result.tv_sec, (long int)tval_result.tv_usec);
 +    timersub(&tval_after_elligator_gen, &tval_start_elligator_gen, &tval_result);
 +    printf("%ld.%06ld\n", (long int)tval_result.tv_sec, (long int)tval_result.tv_usec);
 +    fflush(stdout);
++#endif
 +
      if (s->hello_retry_request == SSL_HRR_PENDING) {
          /* Ditch the session. We'll create a new one next time around */
          SSL_SESSION_free(s->session);
-@@ -2492,6 +2761,8 @@ CON_FUNC_RETURN tls_construct_server_hello(SSL_CONNECTION *s, WPACKET *pkt)
+@@ -2492,6 +2725,8 @@ CON_FUNC_RETURN tls_construct_server_hello(SSL_CONNECTION *s, WPACKET *pkt)
          return CON_FUNC_ERROR;
      }
  
@@ -9755,5 +9748,5 @@ index 772a6fc173..f16c9d0bf7 100644
      *secret_size = EVP_MD_get_size(md);
      /* Calls SSLfatal() if required */
 -- 
-2.44.0
+2.45.1
 

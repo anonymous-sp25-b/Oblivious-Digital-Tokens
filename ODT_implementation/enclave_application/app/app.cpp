@@ -232,10 +232,7 @@ sgx_status_t prepare_launch_client(int &ret, char* server_name, char* server_por
   unsigned int s_large_array[STACK_ARRAY_SIZE];
   unsigned int *h_large_array[HEAP_LARGE_ARRAY_NUM];
 
-  for (int i = 0; i < HEAP_LARGE_ARRAY_NUM; i++) {
-    h_large_array[i] = (unsigned int*)malloc(sizeof(unsigned int) * HEAP_LARGE_ARRAY_SIZE);
-  }
-
+#if ODT_PREPARE_STACK == 1
   // Populate stack with values
   seed = 0b00110100010101100111111100010011;
   for (int i = 0; i < 1024 * 1024; i++) {
@@ -245,6 +242,12 @@ sgx_status_t prepare_launch_client(int &ret, char* server_name, char* server_por
     } else {
       seed = (seed >> 1);
     }
+  }
+#endif
+
+#if ODT_PREPARE_HEAP == 1
+  for (int i = 0; i < HEAP_LARGE_ARRAY_NUM; i++) {
+    h_large_array[i] = (unsigned int*)malloc(sizeof(unsigned int) * HEAP_LARGE_ARRAY_SIZE);
   }
 
   // Populate heap with values
@@ -259,6 +262,7 @@ sgx_status_t prepare_launch_client(int &ret, char* server_name, char* server_por
       }
     }
   }
+#endif
 
   std::ifstream maps_file("/proc/self/maps");
   std::ofstream heap_dump("app_heap_dump", std::ofstream::binary);
@@ -284,21 +288,28 @@ sgx_status_t prepare_launch_client(int &ret, char* server_name, char* server_por
     }
   } while (maps_file.good());
 
+#if ODT_PREPARE_STACK == 1
+  std::cout << "Offset of the stack large_array " << ((uint8_t *)s_large_array) - ((uint8_t *)s_start) << std::endl;
+#endif
 
-  //std::cout << "Offset of the stack large_array " << ((uint8_t *)s_large_array) - ((uint8_t *)s_start) << std::endl;
+#if ODT_PREPARE_HEAP == 1
+  std::cout << std::hex << "Offset of the heap large_array " << ((uint8_t *)h_large_array) - ((uint8_t *)h_start) << std::endl << std::dec;
+#endif
 
-  //std::cout << std::hex << "Offset of the heap large_array " << ((uint8_t *)h_large_array) - ((uint8_t *)h_start) << std::endl << std::dec;
+#if ODT_DUMP_STACK == 1
+  for (int i = 0; i < ((uint8_t*)end - ((uint8_t*)start)); i++) {
+    stack_dump << *((uint8_t *)(start) + i);
+  }
+  stack_dump.close();
+#endif
 
-
-  //for (int i = 0; i < ((uint8_t*)end - ((uint8_t*)start)); i++) {
-  //stack_dump << *((uint8_t *)(start) + i);
-  //}
-  //stack_dump.close();
-
-  //for (int i = 0; i < ((uint8_t*)h_end - ((uint8_t*)h_start)); i++) {
-    //heap_dump << *((uint8_t *)(h_start) + i);
-    //}
-  //heap_dump.close();
+#if ODT_DUMP_HEAP == 1
+  printf("Dumping heap to: app_heap_dump\n   Please copy file to OpenSSL ODT server root directory.\n");
+  for (int i = 0; i < ((uint8_t*)h_end - ((uint8_t*)h_start)); i++) {
+    heap_dump << *((uint8_t *)(h_start) + i);
+  }
+  heap_dump.close();
+#endif
 
   auto ret2 = launch_tls_client(global_eid, &ret, server_name, server_port, &s_start, &s_end, &h_start, &h_end);
 

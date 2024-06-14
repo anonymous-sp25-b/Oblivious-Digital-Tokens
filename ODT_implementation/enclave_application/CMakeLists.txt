@@ -5,8 +5,14 @@ project(WITNESS_MEASUREMENT VERSION 0.1)
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
-# Setup SGX variables
+# ODT testing variables
+add_compile_definitions(ODT_DUMP_HEAP=1)
+add_compile_definitions(ODT_DUMP_STACK=0)
+add_compile_definitions(ODT_PREPARE_STACK=0)
+add_compile_definitions(ODT_PREPARE_HEAP=1)
+add_compile_definitions(ODT_DEBUG=0)
 
+# Setup SGX variables
 set(SGX_SDK "/opt/intel/sgxsdk")
 set(SGX_SSL "/opt/intel/sgxssl")
 set(SGX_MODE "HW")
