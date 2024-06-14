@@ -56,19 +56,19 @@ https://github.com/intel/intel-sgx-ssl/tree/support_tls_openssl3
 1. Switch to `bash` and `source` the `/opt/intel/sgxsdk/environment`
    file.
 2. Run the make command as instructed to compile the library once.
-3. Modify the `Linux/build_openssl.sh` script as follows:
-```bash
-# rm -rf $OPENSSL_VERSION
-# tar xvf $OPENSSL_VERSION.tar.gz || exit 1
-```
+3. Modify the `Linux/build_openssl.sh` script by adding `#` to the following lines:
+
+        # rm -rf $OPENSSL_VERSION
+        # tar xvf $OPENSSL_VERSION.tar.gz || exit 1
+   
     - Commenting out those lines ensures that our OpenSSL patch in the
-    next step does not get overwritten.
-4. Apply `patches/ODT-client.patch` to the OpenSSL library (version
+      next step does not get overwritten.
+5. Apply `patches/ODT-client.patch` to the OpenSSL library (version
    3.0.12) found in the `openssl_source` directory to add ODT support
    to it.
    - Run `make all` in the OpenSSL directory to build the OpenSSL
      library
-5. Run `make all` and `make install` in the `Linux` directory.
+6. Run `make all` and `make install` in the `Linux` directory.
 
 ## OpenSSL ODT server setup
 Clone the OpenSSL repository and checkout the `707b54bee2` commit.
@@ -98,9 +98,9 @@ are described in the following subsections.
 
 1. Switch to the agent application build directory.
 2. Start the application by running the following command:
-```bash
-./application aaa -server:127.0.0.1 -port:4433
-```
+
+        ./application aaa -server:127.0.0.1 -port:4433
+
     - Once launched, the application dumps the heap into
       `app_heap_dump`.
     - Copy this file into the root directory of the OpenSSL ODT
